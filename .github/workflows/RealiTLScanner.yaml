@@ -1,0 +1,140 @@
+---
+name: "Build RealiTLScanner"
+
+on:
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - "**/*.md"
+  schedule:
+    - cron: "0 22 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # macOS
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+
+          # Linux
+          - { goos: linux, goarch: "386" }
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm, goarm: "5" }
+          - { goos: linux, goarch: arm, goarm: "6" }
+          - { goos: linux, goarch: arm, goarm: "7" }
+          - { goos: linux, goarch: arm64 }
+          - { goos: linux, goarch: ppc64le }
+          - { goos: linux, goarch: riscv64 }
+          - { goos: linux, goarch: mips64 }
+          - { goos: linux, goarch: mips64le }
+          - { goos: linux, goarch: s390x }
+
+          # Windows
+          - { goos: windows, goarch: "386" }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+
+          # BSD
+          - { goos: freebsd, goarch: "386" }
+          - { goos: freebsd, goarch: amd64 }
+          - { goos: freebsd, goarch: arm64 }
+    name: "Build binary"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@v6
+        with:
+          repository: XTLS/RealiTLScanner
+          path: src
+
+      - name: "Setup Go"
+        uses: actions/setup-go@v6
+        with:
+          go-version: "stable"
+          check-latest: true
+          cache-dependency-path: ./src/go.sum
+
+      - name: "Build binary"
+        working-directory: ./src
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: 0
+        run: |
+          set -eEuxo pipefail
+          echo "GOOS: $GOOS, GOARCH: $GOARCH, GOARM: $GOARM"
+          mkdir dist || exit 1
+          go build -v -trimpath -o dist/RealiTLScanner -gcflags="all=-l=4" -ldflags="-s -w -buildid="
+
+      - name: "Prepare assets"
+        working-directory: ./src
+        run: |
+          set -eEuxo pipefail
+          BINARY_NAME="RealiTLScanner_${{ matrix.goos }}_${{ matrix.goarch }}"
+          if [[ -n "${{ matrix.goarm }}" ]]; then
+            BINARY_NAME="${BINARY_NAME}v${{ matrix.goarm }}"
+          fi
+          if [[ "${{ matrix.goos }}" == "windows" ]]; then
+            mv "dist/RealiTLScanner" "dist/${BINARY_NAME}.exe"
+            echo "BINARY_NAME=${BINARY_NAME}.exe" >> "$GITHUB_ENV"
+          else
+            mv "dist/RealiTLScanner" "dist/${BINARY_NAME}"
+            echo "BINARY_NAME=${BINARY_NAME}" >> "$GITHUB_ENV"
+          fi
+
+      - name: "Upload artifact"
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ env.BINARY_NAME }}
+          path: ./src/dist/${{ env.BINARY_NAME }}
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: "Publish release"
+    needs:
+      - build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: "Set release variable"
+        run: |
+          echo "RELEASE_NAME=Released on $(date -u '+%Y%m%d' -d '+8 hours')" >> "$GITHUB_ENV"
+          echo "TAG_NAME=$(awk -F. '{printf("v%d.%d.%d", substr($1,3), $2, $3)}' <<<"$(date -u '+%Y.%m.%d' -d '+8 hours')")" >> "$GITHUB_ENV"
+
+      - name: "Download digests"
+        uses: actions/download-artifact@v7
+        with:
+          path: /tmp/assets
+          pattern: RealiTLScanner_*
+          merge-multiple: true
+
+      - name: "Generate checksums"
+        working-directory: /tmp/assets
+        run: |
+          set -eEuxo pipefail
+          ls -R
+          sha256sum RealiTLScanner_* > sha256sum.txt
+
+      - name: "Upload release"
+        uses: softprops/action-gh-release@v2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          files: /tmp/assets/*
+          name: ${{ env.RELEASE_NAME }}
+          tag_name: ${{ env.TAG_NAME }}
+          generate_release_notes: true
