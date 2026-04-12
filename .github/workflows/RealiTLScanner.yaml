@@ -130,7 +130,7 @@ jobs:
           sha256sum RealiTLScanner_* > sha256sum.txt
 
       - name: "Upload release"
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         env:
           GH_TOKEN: ${{ github.token }}
         with:
